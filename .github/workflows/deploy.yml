@@ -1,0 +1,74 @@
+# 部署到 GitHub Pages：每次推送到 main 自动运行。
+# 第一次使用前，到仓库 Settings → Pages，把 Source 选成「GitHub Actions」。
+#
+# 网址和子路径会自动算好（https://用户名.github.io/仓库名/，或者你绑定的自定义域名），不用改任何配置。
+#
+# 网站设置里关掉「部署到 GitHub Pages」（src/site.yml 的 info.githubPages）时，这个工作流只做检查、不部署。
+# 用 Cloudflare Pages 的站关掉它就行，Cloudflare 那边连上仓库后会自己部署。
+name: 部署到 GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # 先看网站设置里选的是不是 GitHub Pages
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      github: ${{ steps.target.outputs.github }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            src/site.yml
+            scripts/deploy-target.mjs
+          sparse-checkout-cone-mode: false
+      - id: target
+        run: node scripts/deploy-target.mjs
+
+  build:
+    needs: check
+    if: needs.check.outputs.github == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - run: npm run build
+        env:
+          SITE_URL: ${{ steps.pages.outputs.origin }}
+          SITE_BASE: ${{ steps.pages.outputs.base_path }}/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

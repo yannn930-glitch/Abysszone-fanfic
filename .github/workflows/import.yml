@@ -1,0 +1,68 @@
+# 网页后台「批量导入」页面点「开始导入」时运行：把 imports/ 里的 .md / .txt / .docx / .zip 转成作品。
+# 作品名和文件名都用文件名；点按钮时填的配对、系列等信息用在这一批的每一篇上。
+# 失败的文件会留在 imports/，原因写在 imports/_导入失败说明.txt。
+# 只上传不点按钮的话不会导入，所以可以先慢慢传、最后一起导入。
+name: 批量导入作品
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: 后台传来的作品信息（从 GitHub 手动运行时填 {} 就行）
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - name: 导入
+        run: node scripts/import-uploads.mjs
+        env:
+          PAGES_CMS_PAYLOAD: ${{ inputs.payload }}
+
+      - name: 提交导入结果
+        id: commit
+        run: |
+          git add -A imports src/content/works
+          if git diff --cached --quiet; then
+            echo "没有新导入的作品"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat: 批量导入作品"
+          # 导入期间如果又有人保存了内容，先接上最新的 main 再推
+          git pull --rebase origin main
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # 工作流自己推送的提交不会触发其他工作流，所以要手动触发一次 GitHub Pages 部署。
+      # Cloudflare Pages 会自己检测到推送，不需要这一步；关掉了「部署到 GitHub Pages」时也跳过。
+      - name: 看网站部署在哪
+        id: target
+        if: steps.commit.outputs.changed == 'true'
+        run: node scripts/deploy-target.mjs
+
+      - name: 重新部署网站
+        if: steps.commit.outputs.changed == 'true' && steps.target.outputs.github == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --ref main
